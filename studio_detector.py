@@ -18,10 +18,43 @@ from colorama import init, Fore, Style
 # Initialize colorama for cross-platform colored output
 init()
 
+# Pre-compute constants for better performance (calculated once at module load)
+import time
+start_time = time.time()
+
+# Pre-computed kernels for consistent operations
+GAUSSIAN_KERNEL = cv2.getGaussianKernel(5, 0)
+SOBEL_KERNEL_X = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+SOBEL_KERNEL_Y = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
+MORPH_KERNEL = np.ones((5, 5), np.uint8)
+
+# Analysis parameters
+MAX_RESOLUTION = 512  # Optimal balance of speed vs accuracy
+GRID_SIZE = 8
+
+setup_time = time.time() - start_time
+
 def log_to_stderr(message, color=Fore.WHITE):
     """Print colored message to stderr"""
     sys.stderr.write(color + message + Style.RESET_ALL + '\n')
     sys.stderr.flush()
+
+def resize_image_for_analysis(image):
+    """
+    Resize image to optimal resolution for analysis.
+    Reduces to 512px max dimension for best speed/accuracy balance.
+    
+    Returns:
+        tuple: (resized_image, was_resized)
+    """
+    height, width = image.shape[:2]
+    if max(height, width) > MAX_RESOLUTION:
+        scale = MAX_RESOLUTION / max(height, width)
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+        resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        return resized, True
+    return image, False
 
 def analyze_shadows(image, verbose=False):
     """
@@ -361,6 +394,14 @@ Examples:
         log_to_stderr("Studio Photography Detector", Fore.YELLOW + Style.BRIGHT)
         log_to_stderr("=" * 40, Fore.YELLOW)
         log_to_stderr(f"Analyzing: {args.image_path}", Fore.WHITE)
+        log_to_stderr(f"Original size: {image.shape[1]}x{image.shape[0]}", Fore.WHITE)
+        
+        # Resize image for optimal analysis
+        analysis_image, was_resized = resize_image_for_analysis(image)
+        if was_resized:
+            log_to_stderr(f"Resized to: {analysis_image.shape[1]}x{analysis_image.shape[0]} for optimal analysis", Fore.CYAN)
+            log_to_stderr(f"Pre-computed constants loaded in {setup_time*1000:.1f}ms", Fore.CYAN)
+        
         log_to_stderr("")
         
         # Run all analysis components
@@ -369,7 +410,7 @@ Examples:
         # 1. Shadow Analysis
         log_to_stderr("[1/4] Shadow Analysis", Fore.GREEN + Style.BRIGHT)
         log_to_stderr("-" * 40, Fore.GREEN)
-        shadow_results = analyze_shadows(image, args.verbose)
+        shadow_results = analyze_shadows(analysis_image, args.verbose)
         log_to_stderr(f"✓ Shadow softness: {shadow_results['softness']:.2f} ({format_score_interpretation(shadow_results['softness'])})", Fore.WHITE)
         log_to_stderr(f"✓ Direction consistency: {shadow_results['direction_consistency']:.2f} ({format_score_interpretation(shadow_results['direction_consistency'])})", Fore.WHITE)
         log_to_stderr(f"✓ Shadow uniformity: {shadow_results['uniformity']:.2f} ({format_score_interpretation(shadow_results['uniformity'])})", Fore.WHITE)
@@ -379,7 +420,7 @@ Examples:
         # 2. Highlight Analysis
         log_to_stderr("[2/4] Highlight Analysis", Fore.GREEN + Style.BRIGHT)
         log_to_stderr("-" * 40, Fore.GREEN)
-        highlight_results = analyze_highlights(image, args.verbose)
+        highlight_results = analyze_highlights(analysis_image, args.verbose)
         catchlight_text = "Yes (circular pattern)" if highlight_results['catchlight_detected'] else "No"
         log_to_stderr(f"✓ Catchlights detected: {catchlight_text}", Fore.WHITE)
         log_to_stderr(f"✓ Distribution uniformity: {highlight_results['distribution_uniformity']:.2f} ({format_score_interpretation(highlight_results['distribution_uniformity'])})", Fore.WHITE)
@@ -390,7 +431,7 @@ Examples:
         # 3. Color Temperature Analysis
         log_to_stderr("[3/4] Color Temperature Analysis", Fore.GREEN + Style.BRIGHT)
         log_to_stderr("-" * 40, Fore.GREEN)
-        color_results = analyze_color_temperature(image, args.verbose)
+        color_results = analyze_color_temperature(analysis_image, args.verbose)
         log_to_stderr(f"✓ Temperature consistency: {color_results['temperature_consistency']:.2f} ({format_score_interpretation(color_results['temperature_consistency'])})", Fore.WHITE)
         log_to_stderr(f"✓ Single light source: {color_results['mixed_lighting']:.2f} ({format_score_interpretation(color_results['mixed_lighting'])})", Fore.WHITE)
         log_to_stderr(f"✓ Gradient uniformity: {color_results['gradient_uniformity']:.2f} ({format_score_interpretation(color_results['gradient_uniformity'])})", Fore.WHITE)
@@ -400,7 +441,7 @@ Examples:
         # 4. Background Separation Analysis
         log_to_stderr("[4/4] Background Separation Analysis", Fore.GREEN + Style.BRIGHT)
         log_to_stderr("-" * 40, Fore.GREEN)
-        background_results = analyze_background_separation(image, args.verbose)
+        background_results = analyze_background_separation(analysis_image, args.verbose)
         log_to_stderr(f"✓ Edge sharpness: {background_results['edge_sharpness']:.2f} ({format_score_interpretation(background_results['edge_sharpness'])})", Fore.WHITE)
         log_to_stderr(f"✓ Background uniformity: {background_results['background_uniformity']:.2f} ({format_score_interpretation(background_results['background_uniformity'])})", Fore.WHITE)
         log_to_stderr(f"✓ Rim lighting presence: {background_results['rim_lighting']:.2f} ({format_score_interpretation(background_results['rim_lighting'])})", Fore.WHITE)

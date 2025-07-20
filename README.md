@@ -179,3 +179,86 @@ After establishing the core analysis, we investigated whether similar accuracy c
 
 This optimization makes the tool practical for processing large datasets while maintaining high accuracy.
 
+### Phase 3: Frequency Domain and Composition Analysis (Implemented)
+Building on the solid foundation of lighting analysis, Phase 3 adds sophisticated analysis techniques for ambiguous cases where lighting analysis alone is inconclusive.
+
+**Conditional Execution Strategy**:
+Phase 3 only triggers when lighting confidence is moderate (0.3-0.7), ensuring optimal performance:
+- **Clear cases** (confidence < 0.3 or > 0.7): Skip Phase 3, save ~1000ms processing time
+- **Ambiguous cases** (confidence 0.3-0.7): Run full Phase 3 analysis for improved accuracy
+
+**Four Advanced Analysis Components**:
+
+**1. Fourier Transform Analysis**:
+- **2D FFT analysis** to detect artificial vs natural frequency patterns
+- **Frequency band analysis**: Studio images show higher low-frequency content (smooth backgrounds)
+- **Background smoothness detection**: Professional studio backdrops create characteristic frequency signatures
+- **Edge gradient analysis**: Measures background uniformity typical of controlled environments
+
+**2. Depth of Field Analysis**:
+- **Laplacian variance mapping**: Measures focus distribution across image regions
+- **Focus gradient correlation**: Professional lenses create predictable focus falloff patterns
+- **Blur uniformity analysis**: Studio lenses produce characteristic bokeh patterns
+- **Professional lens detection**: Identifies optical characteristics of high-end studio equipment
+
+**3. Composition Analysis**:
+- **Rule of thirds detection**: Measures adherence to classical photographic composition
+- **Saliency-based subject positioning**: Uses gradient analysis to locate primary subject
+- **Symmetry analysis**: Detects deliberate compositional balance typical of studio work
+- **Negative space quantification**: Measures controlled use of empty areas in composition
+
+**4. Texture Analysis (GLCM)**:
+- **Gray Level Co-occurrence Matrix**: Analyzes texture patterns in different image regions
+- **Background homogeneity**: Studio backgrounds show high uniformity and low contrast
+- **Foreground/background contrast**: Measures texture separation between subject and background
+- **Professional texture control**: Detects the "too clean" quality of studio environments
+
+**Integration and Weighting**:
+- **Phase 3 combined score**: Frequency 30%, DOF 25%, Composition 25%, Texture 20%
+- **Final confidence**: Lighting 60% + Phase 3 40% (when Phase 3 is triggered)
+- **Performance monitoring**: Processing time logged to demonstrate efficiency gains
+
+**Real-world Impact**:
+- **Improved accuracy** for borderline cases: window light + fill flash, outdoor portraits with reflectors
+- **Better edge case handling**: Portable studio equipment, overcast natural light, professional natural light work
+- **Maintained speed**: ~45ms for clear cases, ~1100ms for ambiguous cases requiring Phase 3
+
+**Example Analysis Output**:
+```
+=== PHASE 1: LIGHTING ANALYSIS ===
+→ Lighting confidence: 45% (mixed characteristics)
+
+=== PHASE 3: FREQUENCY & COMPOSITION ANALYSIS ===
+Lighting analysis inconclusive (confidence: 0.45)
+Running additional frequency domain and composition analysis...
+
+[1/4] Fourier Transform Analysis
+✓ Frequency complexity: 0.73 (studio-like)
+✓ Background smoothness: 0.17 (very natural)
+→ Frequency score: 51% (mixed characteristics)
+
+[2/4] Depth of Field Analysis  
+✓ Focus gradient: 0.48 (mixed characteristics)
+✓ Blur uniformity: 0.00 (very natural)
+→ DOF score: 24% (natural light characteristics)
+
+[3/4] Composition Analysis
+✓ Rule of thirds: 0.20 (very natural)
+✓ Symmetry: 0.48 (mixed characteristics)
+→ Composition score: 30% (natural light characteristics)
+
+[4/4] Texture Analysis
+✓ Background homogeneity: 0.95 (very studio-like)
+✓ Background simplicity: 0.94 (very studio-like)
+→ Texture score: 85% (very studio-like)
+
+Phase 3 analysis completed in 1118ms
+
+=== COMBINED ANALYSIS RESULTS ===
+Phase 1 (Lighting): 0.45
+Phase 3 (Frequency/Comp): 0.46
+Combined confidence: 0.45
+```
+
+This implementation demonstrates how computational resources can be allocated intelligently - providing fast results for obvious cases while investing additional analysis time only where it can meaningfully improve accuracy.
+

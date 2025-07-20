@@ -10,9 +10,13 @@ import sys
 import json
 import argparse
 import os
+import time
 import numpy as np
 import cv2
-from scipy import ndimage, signal
+from scipy import ndimage, signal, fft
+from scipy.ndimage import gaussian_filter
+from skimage import filters, measure, segmentation
+from skimage.feature import graycomatrix, graycoprops
 from colorama import init, Fore, Style
 
 # Initialize colorama for cross-platform colored output
@@ -128,6 +132,448 @@ def resize_image_for_analysis(image):
         resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
         return resized, True
     return image, False
+
+def analyze_frequency_domain(image, verbose=False):
+    """
+    Phase 3: Analyze frequency characteristics of the image.
+    
+    This phase addresses cases where lighting analysis alone is inconclusive.
+    
+    Studio photography typically shows:
+    - Simple frequency patterns (smooth backgrounds)
+    - Regular gradients (professional lighting)
+    - Less high-frequency noise (controlled environment)
+    
+    Natural photography shows:
+    - Complex frequency patterns (varied textures)
+    - Irregular patterns (natural elements)
+    - More high-frequency components (environmental details)
+    
+    Returns:
+        dict: Contains frequency analysis metrics and overall score
+    """
+    # Convert to grayscale for frequency analysis
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Apply 2D FFT to analyze frequency distribution
+    f_transform = fft.fft2(gray)
+    f_shift = fft.fftshift(f_transform)
+    magnitude_spectrum = np.abs(f_shift)
+    
+    # Log transform for better visualization of spectrum
+    log_spectrum = np.log(magnitude_spectrum + 1)
+    
+    # Analyze frequency complexity - studio images have simpler frequency patterns
+    # High frequencies indicate texture complexity (more natural)
+    # Low frequencies indicate smooth gradients (more studio)
+    
+    # Calculate power in different frequency bands
+    rows, cols = gray.shape
+    crow, ccol = rows // 2, cols // 2
+    
+    # Create frequency masks
+    low_freq_mask = np.zeros((rows, cols), np.uint8)
+    cv2.circle(low_freq_mask, (ccol, crow), 30, 1, -1)
+    
+    high_freq_mask = np.ones((rows, cols), np.uint8)
+    cv2.circle(high_freq_mask, (ccol, crow), 100, 0, -1)
+    
+    # Calculate power ratios
+    low_freq_power = np.sum(magnitude_spectrum * low_freq_mask)
+    high_freq_power = np.sum(magnitude_spectrum * high_freq_mask)
+    total_power = np.sum(magnitude_spectrum)
+    
+    low_freq_ratio = low_freq_power / total_power
+    high_freq_ratio = high_freq_power / total_power
+    
+    # Studio images typically have higher low-frequency content
+    frequency_complexity = 1.0 - high_freq_ratio
+    frequency_complexity = np.clip(frequency_complexity, 0, 1)
+    
+    # Analyze background smoothness using gradient analysis
+    # Studio backgrounds are typically very smooth
+    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    gradient_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+    
+    # Background is typically the outer regions of the image
+    h, w = gray.shape
+    border_mask = np.zeros((h, w), np.uint8)
+    border_width = min(h, w) // 8
+    border_mask[:border_width, :] = 1
+    border_mask[-border_width:, :] = 1
+    border_mask[:, :border_width] = 1
+    border_mask[:, -border_width:] = 1
+    
+    background_gradient = np.mean(gradient_magnitude[border_mask == 1])
+    background_smoothness = 1.0 - min(background_gradient / 50.0, 1.0)
+    
+    # Calculate overall frequency score
+    overall_score = (frequency_complexity * 0.6 + background_smoothness * 0.4)
+    
+    if verbose:
+        log_to_stderr(f"  • Frequency analysis:", Fore.CYAN)
+        log_to_stderr(f"    - Low frequency ratio: {low_freq_ratio:.3f}", Fore.CYAN)
+        log_to_stderr(f"    - High frequency ratio: {high_freq_ratio:.3f}", Fore.CYAN)
+        log_to_stderr(f"    - Background gradient: {background_gradient:.2f}", Fore.CYAN)
+    
+    return {
+        'frequency_complexity': frequency_complexity,
+        'background_smoothness': background_smoothness,
+        'low_freq_ratio': low_freq_ratio,
+        'high_freq_ratio': high_freq_ratio,
+        'overall_score': overall_score
+    }
+
+def analyze_depth_of_field(image, verbose=False):
+    """
+    Analyze depth of field characteristics typical of studio photography.
+    
+    Studio photography often features:
+    - Controlled depth of field with professional lenses
+    - Characteristic bokeh patterns
+    - Sharp subject-to-background transitions
+    - Professional lens aberration patterns
+    
+    Returns:
+        dict: Contains depth of field analysis metrics and overall score
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Use Laplacian variance to measure focus across regions
+    # Divide image into grid to analyze focus distribution
+    h, w = gray.shape
+    grid_size = 8
+    cell_h, cell_w = h // grid_size, w // grid_size
+    
+    focus_map = []
+    for i in range(grid_size):
+        row = []
+        for j in range(grid_size):
+            cell = gray[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+            # Calculate Laplacian variance (measure of focus)
+            laplacian = cv2.Laplacian(cell, cv2.CV_64F)
+            focus_value = np.var(laplacian)
+            row.append(focus_value)
+        focus_map.append(row)
+    
+    focus_map = np.array(focus_map)
+    
+    # Find the region with highest focus (likely the subject)
+    max_focus_idx = np.unravel_index(np.argmax(focus_map), focus_map.shape)
+    center_i, center_j = max_focus_idx
+    
+    # Calculate focus falloff from center
+    distances = []
+    focus_values = []
+    
+    for i in range(grid_size):
+        for j in range(grid_size):
+            distance = np.sqrt((i - center_i)**2 + (j - center_j)**2)
+            distances.append(distance)
+            focus_values.append(focus_map[i, j])
+    
+    # Measure how quickly focus falls off with distance
+    # Studio photos often have sharp falloff (controlled DOF)
+    if len(distances) > 1:
+        focus_gradient = np.corrcoef(distances, focus_values)[0, 1]
+        focus_gradient = abs(focus_gradient) if not np.isnan(focus_gradient) else 0
+    else:
+        focus_gradient = 0
+    
+    # Analyze blur characteristics in out-of-focus regions
+    # Studio lenses create characteristic bokeh patterns
+    blur_regions = focus_map < (np.max(focus_map) * 0.3)
+    if np.any(blur_regions):
+        blur_uniformity = 1.0 - np.std(focus_map[blur_regions]) / (np.mean(focus_map[blur_regions]) + 1e-6)
+        blur_uniformity = np.clip(blur_uniformity, 0, 1)
+    else:
+        blur_uniformity = 0.5
+    
+    # Calculate overall DOF score
+    overall_score = (focus_gradient * 0.5 + blur_uniformity * 0.5)
+    overall_score = np.clip(overall_score, 0, 1)
+    
+    if verbose:
+        log_to_stderr(f"  • Depth of field analysis:", Fore.CYAN)
+        log_to_stderr(f"    - Focus gradient correlation: {focus_gradient:.3f}", Fore.CYAN)
+        log_to_stderr(f"    - Blur uniformity: {blur_uniformity:.3f}", Fore.CYAN)
+        log_to_stderr(f"    - Max focus at grid: ({center_i}, {center_j})", Fore.CYAN)
+    
+    return {
+        'focus_gradient': focus_gradient,
+        'blur_uniformity': blur_uniformity,
+        'focus_map': focus_map.tolist(),
+        'overall_score': overall_score
+    }
+
+def analyze_composition(image, verbose=False):
+    """
+    Analyze composition patterns typical of studio photography.
+    
+    Studio photographers often follow:
+    - Rule of thirds positioning
+    - Symmetrical compositions
+    - Controlled negative space
+    - Professional framing principles
+    
+    Returns:
+        dict: Contains composition analysis metrics and overall score
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    
+    # Simple saliency detection using center-surround difference
+    # This approximates where the subject is located
+    center_region = gray[h//4:3*h//4, w//4:3*w//4]
+    center_mean = np.mean(center_region)
+    
+    # Calculate saliency map using gradient magnitude
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    saliency = np.sqrt(grad_x**2 + grad_y**2)
+    
+    # Find the most salient region (likely subject)
+    saliency_smooth = gaussian_filter(saliency, sigma=min(h, w) / 20)
+    max_saliency_idx = np.unravel_index(np.argmax(saliency_smooth), saliency_smooth.shape)
+    subject_y, subject_x = max_saliency_idx
+    
+    # Check rule of thirds positioning
+    # Rule of thirds lines are at 1/3 and 2/3 of image dimensions
+    third_lines_x = [w//3, 2*w//3]
+    third_lines_y = [h//3, 2*h//3]
+    
+    # Distance to nearest rule of thirds intersection
+    min_distance = float('inf')
+    for tx in third_lines_x:
+        for ty in third_lines_y:
+            distance = np.sqrt((subject_x - tx)**2 + (subject_y - ty)**2)
+            min_distance = min(min_distance, distance)
+    
+    # Normalize distance by image diagonal
+    diagonal = np.sqrt(h**2 + w**2)
+    rule_of_thirds_score = 1.0 - min(min_distance / (diagonal * 0.2), 1.0)
+    
+    # Analyze symmetry
+    # Check both horizontal and vertical symmetry
+    left_half = gray[:, :w//2]
+    right_half = gray[:, w//2:]
+    right_half_flipped = np.fliplr(right_half)
+    
+    # Resize to match if needed
+    min_width = min(left_half.shape[1], right_half_flipped.shape[1])
+    left_half = left_half[:, :min_width]
+    right_half_flipped = right_half_flipped[:, :min_width]
+    
+    # Calculate horizontal symmetry
+    if left_half.shape == right_half_flipped.shape:
+        horizontal_symmetry = 1.0 - np.mean(np.abs(left_half - right_half_flipped)) / 255.0
+    else:
+        horizontal_symmetry = 0.5
+    
+    # Calculate negative space (areas with low variance)
+    # Studio photos often have clean, simple backgrounds
+    variance_map = ndimage.generic_filter(gray, np.var, size=20)
+    low_variance_ratio = np.sum(variance_map < np.percentile(variance_map, 25)) / variance_map.size
+    negative_space_score = low_variance_ratio
+    
+    # Calculate overall composition score
+    overall_score = (rule_of_thirds_score * 0.4 + 
+                    horizontal_symmetry * 0.3 + 
+                    negative_space_score * 0.3)
+    
+    if verbose:
+        log_to_stderr(f"  • Composition analysis:", Fore.CYAN)
+        log_to_stderr(f"    - Subject position: ({subject_x}, {subject_y})", Fore.CYAN)
+        log_to_stderr(f"    - Rule of thirds distance: {min_distance:.1f}", Fore.CYAN)
+        log_to_stderr(f"    - Horizontal symmetry: {horizontal_symmetry:.3f}", Fore.CYAN)
+        log_to_stderr(f"    - Negative space ratio: {low_variance_ratio:.3f}", Fore.CYAN)
+    
+    return {
+        'rule_of_thirds_score': rule_of_thirds_score,
+        'horizontal_symmetry': horizontal_symmetry,
+        'negative_space_score': negative_space_score,
+        'subject_position': (int(subject_x), int(subject_y)),
+        'overall_score': overall_score
+    }
+
+def analyze_texture(image, verbose=False):
+    """
+    Analyze texture characteristics using Gray Level Co-occurrence Matrix (GLCM).
+    
+    Studio photography typically features:
+    - Homogeneous backgrounds with low texture complexity
+    - High contrast between subject and background textures
+    - Controlled texture patterns from professional lighting
+    
+    Returns:
+        dict: Contains texture analysis metrics and overall score
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    
+    # Reduce bit depth for GLCM analysis (computational efficiency)
+    gray_reduced = (gray // 32).astype(np.uint8)  # 8 levels instead of 256
+    
+    # Analyze texture in different regions
+    # Background region (border areas)
+    border_width = min(h, w) // 8
+    background_regions = [
+        gray_reduced[:border_width, :],  # top
+        gray_reduced[-border_width:, :],  # bottom
+        gray_reduced[:, :border_width],  # left
+        gray_reduced[:, -border_width:]  # right
+    ]
+    
+    background_textures = []
+    for region in background_regions:
+        if region.size > 100:  # Ensure minimum size for analysis
+            try:
+                # Calculate GLCM for this region
+                glcm = graycomatrix(region, distances=[1], angles=[0], levels=8, symmetric=True, normed=True)
+                # Calculate texture properties
+                contrast = graycoprops(glcm, 'contrast')[0, 0]
+                homogeneity = graycoprops(glcm, 'homogeneity')[0, 0]
+                energy = graycoprops(glcm, 'energy')[0, 0]
+                
+                background_textures.append({
+                    'contrast': contrast,
+                    'homogeneity': homogeneity,
+                    'energy': energy
+                })
+            except:
+                # Handle edge cases where GLCM calculation fails
+                continue
+    
+    # Calculate average background texture properties
+    if background_textures:
+        avg_bg_contrast = np.mean([t['contrast'] for t in background_textures])
+        avg_bg_homogeneity = np.mean([t['homogeneity'] for t in background_textures])
+        avg_bg_energy = np.mean([t['energy'] for t in background_textures])
+    else:
+        avg_bg_contrast = 0.5
+        avg_bg_homogeneity = 0.5
+        avg_bg_energy = 0.5
+    
+    # Analyze center region (likely subject area)
+    center_region = gray_reduced[h//4:3*h//4, w//4:3*w//4]
+    if center_region.size > 100:
+        try:
+            center_glcm = graycomatrix(center_region, distances=[1], angles=[0], levels=8, symmetric=True, normed=True)
+            center_contrast = graycoprops(center_glcm, 'contrast')[0, 0]
+            center_homogeneity = graycoprops(center_glcm, 'homogeneity')[0, 0]
+            center_energy = graycoprops(center_glcm, 'energy')[0, 0]
+        except:
+            center_contrast = 0.5
+            center_homogeneity = 0.5
+            center_energy = 0.5
+    else:
+        center_contrast = 0.5
+        center_homogeneity = 0.5
+        center_energy = 0.5
+    
+    # Studio backgrounds should be homogeneous (high homogeneity, low contrast)
+    background_homogeneity_score = avg_bg_homogeneity
+    background_simplicity_score = 1.0 - min(avg_bg_contrast / 2.0, 1.0)
+    
+    # Calculate texture contrast between foreground and background
+    texture_contrast_ratio = abs(center_contrast - avg_bg_contrast) / (avg_bg_contrast + 0.1)
+    texture_contrast_score = min(texture_contrast_ratio / 2.0, 1.0)
+    
+    # Calculate overall texture score
+    overall_score = (background_homogeneity_score * 0.4 + 
+                    background_simplicity_score * 0.4 + 
+                    texture_contrast_score * 0.2)
+    
+    if verbose:
+        log_to_stderr(f"  • Texture analysis:", Fore.CYAN)
+        log_to_stderr(f"    - Background contrast: {avg_bg_contrast:.3f}", Fore.CYAN)
+        log_to_stderr(f"    - Background homogeneity: {avg_bg_homogeneity:.3f}", Fore.CYAN)
+        log_to_stderr(f"    - Center contrast: {center_contrast:.3f}", Fore.CYAN)
+        log_to_stderr(f"    - Texture contrast ratio: {texture_contrast_ratio:.3f}", Fore.CYAN)
+    
+    return {
+        'background_homogeneity': background_homogeneity_score,
+        'background_simplicity': background_simplicity_score,
+        'texture_contrast': texture_contrast_score,
+        'avg_bg_contrast': avg_bg_contrast,
+        'center_contrast': center_contrast,
+        'overall_score': overall_score
+    }
+
+def analyze_frequency_and_composition(analysis_image, verbose=False):
+    """
+    Phase 3: Comprehensive frequency domain and composition analysis.
+    
+    This phase is triggered when lighting analysis returns moderate confidence (0.3-0.7).
+    Combines four advanced analysis techniques to improve accuracy for ambiguous cases.
+    
+    Args:
+        analysis_image: The preprocessed image to analyze
+        verbose: Whether to show detailed analysis output
+        
+    Returns:
+        dict: Contains all Phase 3 analysis results and combined confidence score
+    """
+    phase3_start_time = time.time()
+    
+    # 1. Frequency Domain Analysis
+    log_to_stderr("[1/4] Fourier Transform Analysis", Fore.BLUE + Style.BRIGHT)
+    log_to_stderr("-" * 40, Fore.BLUE)
+    frequency_results = analyze_frequency_domain(analysis_image, verbose)
+    log_to_stderr(f"✓ Frequency complexity: {frequency_results['frequency_complexity']:.2f} ({format_score_interpretation(frequency_results['frequency_complexity'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Background smoothness: {frequency_results['background_smoothness']:.2f} ({format_score_interpretation(frequency_results['background_smoothness'])})", Fore.WHITE)
+    log_to_stderr(f"→ Frequency score: {frequency_results['overall_score']*100:.0f}% ({format_score_interpretation(frequency_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+    log_to_stderr("")
+    
+    # 2. Depth of Field Analysis
+    log_to_stderr("[2/4] Depth of Field Analysis", Fore.BLUE + Style.BRIGHT)
+    log_to_stderr("-" * 40, Fore.BLUE)
+    dof_results = analyze_depth_of_field(analysis_image, verbose)
+    log_to_stderr(f"✓ Focus gradient: {dof_results['focus_gradient']:.2f} ({format_score_interpretation(dof_results['focus_gradient'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Blur uniformity: {dof_results['blur_uniformity']:.2f} ({format_score_interpretation(dof_results['blur_uniformity'])})", Fore.WHITE)
+    log_to_stderr(f"→ DOF score: {dof_results['overall_score']*100:.0f}% ({format_score_interpretation(dof_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+    log_to_stderr("")
+    
+    # 3. Composition Analysis
+    log_to_stderr("[3/4] Composition Analysis", Fore.BLUE + Style.BRIGHT)
+    log_to_stderr("-" * 40, Fore.BLUE)
+    composition_results = analyze_composition(analysis_image, verbose)
+    log_to_stderr(f"✓ Rule of thirds: {composition_results['rule_of_thirds_score']:.2f} ({format_score_interpretation(composition_results['rule_of_thirds_score'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Symmetry: {composition_results['horizontal_symmetry']:.2f} ({format_score_interpretation(composition_results['horizontal_symmetry'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Negative space: {composition_results['negative_space_score']:.2f} ({format_score_interpretation(composition_results['negative_space_score'])})", Fore.WHITE)
+    log_to_stderr(f"→ Composition score: {composition_results['overall_score']*100:.0f}% ({format_score_interpretation(composition_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+    log_to_stderr("")
+    
+    # 4. Texture Analysis
+    log_to_stderr("[4/4] Texture Analysis", Fore.BLUE + Style.BRIGHT)
+    log_to_stderr("-" * 40, Fore.BLUE)
+    texture_results = analyze_texture(analysis_image, verbose)
+    log_to_stderr(f"✓ Background homogeneity: {texture_results['background_homogeneity']:.2f} ({format_score_interpretation(texture_results['background_homogeneity'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Background simplicity: {texture_results['background_simplicity']:.2f} ({format_score_interpretation(texture_results['background_simplicity'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Texture contrast: {texture_results['texture_contrast']:.2f} ({format_score_interpretation(texture_results['texture_contrast'])})", Fore.WHITE)
+    log_to_stderr(f"→ Texture score: {texture_results['overall_score']*100:.0f}% ({format_score_interpretation(texture_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+    log_to_stderr("")
+    
+    # Calculate Phase 3 confidence score
+    phase3_confidence = (frequency_results['overall_score'] * 0.3 +
+                        dof_results['overall_score'] * 0.25 +
+                        composition_results['overall_score'] * 0.25 +
+                        texture_results['overall_score'] * 0.2)
+    
+    phase3_time = time.time() - phase3_start_time
+    
+    log_to_stderr(f"Phase 3 analysis completed in {phase3_time*1000:.0f}ms", Fore.BLUE)
+    log_to_stderr("")
+    
+    return {
+        'frequency_results': frequency_results,
+        'dof_results': dof_results,
+        'composition_results': composition_results,
+        'texture_results': texture_results,
+        'phase3_confidence': phase3_confidence,
+        'processing_time': phase3_time
+    }
 
 def analyze_shadows(image, verbose=False):
     """
@@ -487,11 +933,48 @@ Examples:
         log_to_stderr(f"→ Lighting confidence: {lighting_results['lighting_confidence']*100:.0f}% ({format_score_interpretation(lighting_results['lighting_confidence'])})", Fore.MAGENTA + Style.BRIGHT)
         log_to_stderr("")
         
-        # Final confidence is currently just lighting analysis
-        # Future phases will modify this calculation
-        confidence = lighting_results['lighting_confidence']
+        # Check if we need Phase 3 analysis
+        lighting_confidence = lighting_results['lighting_confidence']
+        phase3_results = None
         
-        is_studio = confidence > 0.5
+        if 0.3 <= lighting_confidence <= 0.7:
+            log_to_stderr("=== PHASE 3: FREQUENCY & COMPOSITION ANALYSIS ===", Fore.BLUE + Style.BRIGHT)
+            log_to_stderr(f"Lighting analysis inconclusive (confidence: {lighting_confidence:.2f})", Fore.BLUE)
+            log_to_stderr("Running additional frequency domain and composition analysis...", Fore.BLUE)
+            log_to_stderr("")
+            
+            phase3_results = analyze_frequency_and_composition(analysis_image, args.verbose)
+            
+            log_to_stderr("=== PHASE 3 ANALYSIS COMPLETE ===", Fore.BLUE + Style.BRIGHT)
+            log_to_stderr(f"→ Phase 3 confidence: {phase3_results['phase3_confidence']*100:.0f}% ({format_score_interpretation(phase3_results['phase3_confidence'])})", Fore.BLUE + Style.BRIGHT)
+            log_to_stderr("")
+            
+            # Combine Phase 1 and Phase 3 results
+            # Weight: 60% lighting analysis, 40% frequency/composition analysis
+            confidence = (lighting_confidence * 0.6 + phase3_results['phase3_confidence'] * 0.4)
+            
+            log_to_stderr("=== COMBINED ANALYSIS RESULTS ===", Fore.MAGENTA + Style.BRIGHT)
+            log_to_stderr(f"Phase 1 (Lighting): {lighting_confidence:.2f}", Fore.MAGENTA)
+            log_to_stderr(f"Phase 3 (Frequency/Comp): {phase3_results['phase3_confidence']:.2f}", Fore.MAGENTA)
+            log_to_stderr(f"Combined confidence: {confidence:.2f}", Fore.MAGENTA + Style.BRIGHT)
+            log_to_stderr("")
+        else:
+            # Use lighting analysis alone for clear cases
+            confidence = lighting_confidence
+            if lighting_confidence < 0.3:
+                log_to_stderr("=== PHASE 3: SKIPPED ===", Fore.YELLOW + Style.BRIGHT)
+                log_to_stderr(f"Lighting confidence {lighting_confidence:.2f} < 0.3 - clearly natural light", Fore.YELLOW)
+                log_to_stderr("Skipping frequency analysis for performance", Fore.YELLOW)
+            else:
+                log_to_stderr("=== PHASE 3: SKIPPED ===", Fore.YELLOW + Style.BRIGHT)
+                log_to_stderr(f"Lighting confidence {lighting_confidence:.2f} > 0.7 - clearly studio light", Fore.YELLOW)
+                log_to_stderr("Skipping frequency analysis for performance", Fore.YELLOW)
+            log_to_stderr("")
+        
+        # Final confidence calculation
+        final_confidence = confidence
+        
+        is_studio = final_confidence > 0.5
         
         # Print summary
         log_to_stderr("=" * 40, Fore.YELLOW)
@@ -502,7 +985,7 @@ Examples:
         # Output JSON result to stdout
         result = {
             "is_studio": bool(is_studio),  # Convert numpy bool to Python bool
-            "confidence": round(float(confidence), 2)  # Ensure float type
+            "confidence": round(float(final_confidence), 2)  # Ensure float type
         }
         print(json.dumps(result))
         

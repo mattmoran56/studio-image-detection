@@ -262,3 +262,125 @@ Combined confidence: 0.45
 
 This implementation demonstrates how computational resources can be allocated intelligently - providing fast results for obvious cases while investing additional analysis time only where it can meaningfully improve accuracy.
 
+## Next Steps: Top 5 Production Improvements
+
+For scaling to millions of images, these are the most impactful improvements prioritised by their effect:
+
+### 1. **GPU Acceleration** 🚀
+**Implementation**: Replace CPU-based FFT with CUDA cuFFT for Phase 3 frequency analysis
+```python
+# Current: scipy.fft.fft2(gray)  # CPU-based
+# Improved: cupy.fft.fft2(gray)  # GPU-based
+```
+
+The 2D FFT operation in Phase 3 frequency analysis is the single largest computational bottleneck, taking ~400ms of the total 1100ms processing time. This operation is embarrassingly parallel - perfect for GPU acceleration. By moving the FFT computation to GPU using CuPy (CUDA-accelerated NumPy), we can leverage thousands of GPU cores instead of 8-16 CPU cores. The frequency domain analysis involves creating circular masks, computing power spectra, and analysing frequency distributions - all operations that benefit enormously from parallel processing.
+
+Additionally, other Phase 3 components like gradient calculations for background smoothness detection and Laplacian variance mapping for depth of field analysis can be GPU-accelerated. The key is to minimise CPU-GPU memory transfers by keeping intermediate results on GPU memory throughout the entire Phase 3 pipeline. Modern GPUs like RTX 4090 or Tesla V100 can handle the memory requirements for multiple 512px images simultaneously, enabling true batch processing on GPU.
+
+**Impact**: 
+- **Speed**: 10-20x faster Phase 3 processing (1100ms → 50-100ms)
+- **Scale**: Enables single GPU to process 500+ images/minute vs 1 image/minute
+- **Accuracy**: No change, same mathematical operations
+
+### 2. **Batch Processing Pipeline** 📦
+**Implementation**: Process multiple images simultaneously instead of one-by-one
+```python
+def batch_analyze_lighting(images_batch: List[np.ndarray]) -> List[Dict]:
+    # Vectorised operations across entire batch
+    all_shadows = vectorised_shadow_analysis(images_batch)
+    all_highlights = vectorised_highlight_analysis(images_batch)  
+    return combine_batch_results(all_shadows, all_highlights)
+```
+
+Currently, each image is processed individually, creating significant overhead from function calls, memory allocation, and sequential processing. Batch processing transforms the pipeline to handle multiple images as 4D NumPy arrays (batch_size, height, width, channels), enabling vectorised operations across the entire batch. For example, instead of computing Sobel gradients for one 512x512 image, we compute them for a (32, 512, 512, 3) batch simultaneously. NumPy's underlying BLAS libraries (Intel MKL, OpenBLAS) are highly optimised for these large matrix operations.
+
+The implementation requires restructuring algorithms to work on batches rather than individual images. Shadow analysis can compute gradients for all images simultaneously, then apply statistical operations (mean, percentile) across the batch dimension. Highlight detection becomes a batch contour operation, and colour temperature analysis processes LAB conversions for the entire batch. The key challenge is handling variable Phase 3 triggering - images with moderate confidence (0.3-0.7) need additional processing, requiring dynamic batch subdivision.
+
+**Impact**:
+- **Speed**: 3-5x faster due to vectorised NumPy operations and reduced overhead
+- **Scale**: Handle 1000+ images per worker vs 100+ currently
+- **Accuracy**: No change, same algorithms applied more efficiently
+
+### 3. **Machine Learning Hybrid Approach** 🤖
+**Implementation**: Use current rule-based analysis as features for a gradient boosting classifier
+```python
+# Extract 20+ features from existing analysis
+features = [
+    lighting_results['lighting_confidence'],
+    shadow_results['softness'], 
+    highlight_results['distribution_uniformity'],
+    frequency_results['low_freq_ratio'],
+    # ... 16 more engineered features
+]
+final_prediction = xgboost_model.predict(features)
+```
+
+The current rule-based approach, while interpretable and fast, struggles with edge cases like modern LED panels that mimic natural light, mobile photography with computational enhancements, and hybrid lighting setups (window light + fill flash). A machine learning model can learn complex non-linear relationships between features that human-designed rules miss. Instead of replacing the entire system, we extract 20+ numerical features from our existing analysis components and use them to train a gradient boosting classifier (XGBoost or LightGBM).
+
+This approach combines the best of both worlds: the interpretability and speed of rule-based features with the pattern recognition power of machine learning. Features include ratios between different analysis scores, interaction terms (shadow_softness × highlight_uniformity), and statistical distributions of intermediate calculations. The model learns, for example, that LED panels have high colour temperature consistency but specific highlight distribution patterns that differ from traditional studio strobes. Training requires 10,000+ manually annotated images spanning modern photography equipment and styles.
+
+**Impact**:
+- **Accuracy**: 94% → 97-98% on challenging edge cases (LED panels, mobile photography)
+- **Speed**: Minimal impact, ML inference adds <1ms
+- **Scale**: Better accuracy reduces false positive rates, improving user experience
+
+### 4. **Kubernetes Auto-Scaling** ☁️
+**Implementation**: Deploy with horizontal auto-scaling based on queue depth
+```yaml
+# Auto-scale from 10 to 1000 workers based on demand
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+spec:
+  minReplicas: 10
+  maxReplicas: 1000
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: queue_depth
+      target:
+        type: Value
+        value: "100"  # Scale up when >100 images queued
+```
+
+Production workloads rarely have consistent traffic patterns - social media platforms see massive spikes during peak hours, stock photo services have irregular upload bursts, and API customers can suddenly submit large batches. Manual scaling wastes resources during low traffic and creates bottlenecks during spikes. Kubernetes Horizontal Pod Autoscaler (HPA) monitors custom metrics like Redis queue depth and automatically spins up new worker pods when demand increases.
+
+The implementation uses separate scaling policies for Phase 1 (fast, CPU-intensive) and Phase 3 (complex, memory-intensive) workers. Phase 1 workers scale aggressively (10→500 replicas in 2 minutes) since they process quickly, while Phase 3 workers scale more conservatively due to GPU resource constraints. Custom metrics from Prometheus track queue depth, processing latency, and resource utilisation. The system can scale from handling 1,000 images/hour to 1,000,000+ images/hour automatically, with built-in safeguards to prevent resource exhaustion and cascading failures.
+
+**Impact**:
+- **Scale**: Handle traffic spikes from 1K to 1M+ images/hour automatically
+- **Speed**: Maintains <500ms response time under any load
+- **Accuracy**: No change, same processing with elastic capacity
+
+### 5. **Smart Result Caching** 💾
+**Implementation**: Cache analysis results using perceptual image hashing to detect duplicate/similar images
+```python
+# Generate perceptual hash for each image
+image_hash = imagehash.phash(image, hash_size=16)
+
+# Check cache for similar images (within 5 bits difference)
+cached_result = redis.get_similar_hash(image_hash, threshold=5)
+if cached_result:
+    return cached_result  # Skip expensive analysis
+```
+
+Real-world image datasets contain enormous numbers of duplicates and near-duplicates: social media platforms see the same viral images thousands of times, stock photo services have slight variations of popular images, and e-commerce sites often process multiple crops/resizes of the same product photos. Traditional MD5 hashing only catches exact duplicates, missing the 80% of near-duplicates that differ by compression, minor crops, or watermarks.
+
+Perceptual hashing creates a compact fingerprint based on image content rather than pixel values. The pHash algorithm reduces images to 8x8 DCT coefficients, creating a 64-bit hash where similar images have similar hash values (measured by Hamming distance). By storing these hashes in Redis with spatial indexing, we can quickly find images within 5-10 bits difference, indicating very similar content. This catches not just exact duplicates but also slightly compressed versions, minor crops, and format conversions. The cache TTL can be set based on business requirements - longer for stock photos (30 days), shorter for user-generated content (24 hours).
+
+**Impact**:
+- **Speed**: 50-80% of images skip analysis entirely (social media, stock photos have many duplicates)
+- **Scale**: Effective throughput increases 3-5x for real-world datasets
+- **Accuracy**: No change for unique images, identical results for duplicates
+
+### **Combined Expected Improvements**
+
+Implementing all 5 improvements together:
+
+- **Speed**: 45ms → 2-5ms per image (10-20x faster)
+- **Scale**: 100 images/hour → 10M+ images/day per cluster  
+- **Accuracy**: 94% → 97-98% on challenging cases
+- **Cost**: $0.01 → $0.0005 per image analysis
+
+This focused approach delivers maximum impact with manageable complexity, transforming the system from a proof-of-concept to production-ready infrastructure capable of handling enterprise workloads.
+

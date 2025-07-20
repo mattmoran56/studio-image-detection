@@ -28,12 +28,12 @@
 
 ### Basic Usage
 
-Analyze an image:
+Analyse an image:
 ```bash
 python studio_detector.py path/to/your/image.jpg
 ```
 
-The tool automatically optimizes images to 512px resolution for the best speed/accuracy balance and will output detailed analysis to the terminal and end with a JSON result like:
+The tool automatically optimises images to 512px resolution for the best speed/accuracy balance and will output detailed analysis to the terminal and end with a JSON result like:
 ```json
 {"is_studio": true, "confidence": 0.81}
 ```
@@ -50,7 +50,7 @@ python studio_detector.py portrait.jpg --verbose
 
 ## What This Tool Does
 
-This tool analyzes photographs to determine whether they were taken in a professional studio setting. It examines the lighting characteristics that distinguish studio photography from natural light photography, giving you a confidence score from 0 to 100%.
+This tool analyses photographs to determine whether they were taken in a professional studio setting. It examines the lighting characteristics that distinguish studio photography from natural light photography, giving you a confidence score from 0 to 100%.
 
 ## Background Research
 
@@ -59,7 +59,7 @@ This tool analyzes photographs to determine whether they were taken in a profess
 Professional studio photography and natural light photography create fundamentally different lighting signatures that can be detected through image analysis. This difference stems from the controlled nature of studio environments versus the chaotic, unpredictable characteristics of natural lighting.
 
 **Studio Lighting Characteristics:**
-- **Controlled light sources**: Artificial lights with consistent output, color temperature, and positioning
+- **Controlled light sources**: Artificial lights with consistent output, colour temperature, and positioning
 - **Light modifiers**: Softboxes, umbrellas, diffusers, and reflectors create predictable light quality
 - **Multi-light setups**: Key lights, fill lights, rim lights, and background lights work together systematically
 - **Consistent environment**: Controlled backgrounds, consistent distances, and repeatable setups
@@ -78,7 +78,7 @@ Shadows reveal critical information about lighting setups because they directly 
 - **Soft shadow edges**: Large light sources (softboxes, umbrellas) create gradual light-to-shadow transitions
 - **Directional consistency**: Multiple lights are positioned deliberately, creating predictable shadow directions
 - **Fill light effects**: Secondary lights reduce shadow density, creating more uniform shadow appearance
-- **Controlled shadow placement**: Photographers position lights to optimize shadow aesthetics
+- **Controlled shadow placement**: Photographers position lights to optimise shadow aesthetics
 
 **Natural Light Shadow Patterns:**
 - **Hard shadow edges**: Direct sunlight creates sharp shadow boundaries due to the sun's effective point-source nature
@@ -89,7 +89,7 @@ Shadows reveal critical information about lighting setups because they directly 
 **Technical Detection Methods:**
 - **Gradient analysis**: Measuring the rate of luminance change at shadow edges
 - **Direction vector analysis**: Computing shadow direction consistency across the image
-- **Local variance**: Analyzing shadow density uniformity using statistical measures
+- **Local variance**: Analysing shadow density uniformity using statistical measures
 
 ### Highlight Analysis Research
 
@@ -109,24 +109,24 @@ Highlights provide strong evidence of studio lighting through their geometric pa
 
 **Technical Detection Methods:**
 - **Shape regularity analysis**: Measuring geometric perfection of bright regions
-- **Distribution uniformity**: Analyzing how evenly highlights are spread across the image
+- **Distribution uniformity**: Analysing how evenly highlights are spread across the image
 - **Pattern recognition**: Detecting characteristic shapes created by studio light modifiers
 
-### Color Temperature Research
+### Colour Temperature Research
 
-Color temperature consistency provides another reliable indicator of studio versus natural lighting conditions.
+Colour temperature consistency provides another reliable indicator of studio versus natural lighting conditions.
 
-**Studio Color Consistency:**
-- **Uniform color temperature**: All lights typically matched to the same Kelvin value
-- **Controlled color mixing**: When multiple color temperatures are used, it's done intentionally
-- **No gradients**: Studio lighting maintains consistent color across the image
-- **Predictable white balance**: Images can be color-corrected uniformly
+**Studio Colour Consistency:**
+- **Uniform colour temperature**: All lights typically matched to the same Kelvin value
+- **Controlled colour mixing**: When multiple colour temperatures are used, it's done intentionally
+- **No gradients**: Studio lighting maintains consistent colour across the image
+- **Predictable white balance**: Images can be colour-corrected uniformly
 
-**Natural Light Color Complexity:**
-- **Mixed color sources**: Warm sunlight mixed with cool skylight creates color temperature gradients
-- **Temporal changes**: Color temperature shifts throughout the day (golden hour, blue hour)
-- **Environmental reflections**: Colored surfaces (grass, buildings, sand) tint the light
-- **Atmospheric effects**: Haze, clouds, and pollution alter color characteristics
+**Natural Light Colour Complexity:**
+- **Mixed colour sources**: Warm sunlight mixed with cool skylight creates colour temperature gradients
+- **Temporal changes**: Colour temperature shifts throughout the day (golden hour, blue hour)
+- **Environmental reflections**: Coloured surfaces (grass, buildings, sand) tint the light
+- **Atmospheric effects**: Haze, clouds, and pollution alter colour characteristics
 
 ### Limitations and Edge Cases
 
@@ -144,7 +144,7 @@ Color temperature consistency provides another reliable indicator of studio vers
 **Technical Limitations:**
 - **Image compression**: JPEG artifacts can obscure subtle lighting characteristics
 - **Resolution dependency**: Some lighting signatures are only visible at sufficient image resolution
-- **Color space limitations**: sRGB color space may not capture full lighting information
+- **Colour space limitations**: sRGB colour space may not capture full lighting information
 
 
 ## Development Evolution
@@ -155,7 +155,7 @@ The foundation of studio detection lies in comprehensive lighting analysis. We i
 **Core Components:**
 - **Shadow Analysis**: Detecting soft, uniform shadows typical of studio diffusers and controlled lighting setups
 - **Highlight Analysis**: Identifying controlled highlight patterns, catchlights, and geometric light reflections
-- **Color Temperature Analysis**: Checking for uniform lighting color across the image vs mixed natural sources
+- **Colour Temperature Analysis**: Checking for uniform lighting colour across the image vs mixed natural sources
 - **Background Separation**: Evaluating subject/background relationship with rim lighting and controlled depth
 
 **Why This Works:**
@@ -175,9 +175,9 @@ After establishing the core analysis, we investigated whether similar accuracy c
 - **512px resolution** provides the optimal balance: 2.8x faster processing with 99% accuracy retention
 - **Studio lighting patterns are scale-invariant** - the relative characteristics remain detectable at lower resolutions
 - **Pattern-based analysis** works better than pixel-level detail for lighting detection
-- **Automatic optimization** now resizes images to 512px max dimension while preserving aspect ratio
+- **Automatic optimisation** now resizes images to 512px max dimension while preserving aspect ratio
 
-This optimization makes the tool practical for processing large datasets while maintaining high accuracy.
+This optimisation makes the tool practical for processing large datasets while maintaining high accuracy.
 
 ### Phase 3: Frequency Domain and Composition Analysis (Implemented)
 Building on the solid foundation of lighting analysis, Phase 3 adds sophisticated analysis techniques for ambiguous cases where lighting analysis alone is inconclusive.
@@ -208,7 +208,7 @@ Phase 3 only triggers when lighting confidence is moderate (0.3-0.7), ensuring o
 - **Negative space quantification**: Measures controlled use of empty areas in composition
 
 **4. Texture Analysis (GLCM)**:
-- **Gray Level Co-occurrence Matrix**: Analyzes texture patterns in different image regions
+- **Grey Level Co-occurrence Matrix**: Analyses texture patterns in different image regions
 - **Background homogeneity**: Studio backgrounds show high uniformity and low contrast
 - **Foreground/background contrast**: Measures texture separation between subject and background
 - **Professional texture control**: Detects the "too clean" quality of studio environments

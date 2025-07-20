@@ -39,6 +39,79 @@ def log_to_stderr(message, color=Fore.WHITE):
     sys.stderr.write(color + message + Style.RESET_ALL + '\n')
     sys.stderr.flush()
 
+def analyze_lighting(analysis_image, verbose=False):
+    """
+    Comprehensive lighting analysis - the core foundation of studio detection.
+    
+    This function runs all four fundamental lighting analysis components:
+    1. Shadow Analysis - examines shadow characteristics
+    2. Highlight Analysis - examines bright spots and reflections  
+    3. Color Temperature Analysis - examines lighting color consistency
+    4. Background Separation Analysis - examines subject/background relationship
+    
+    Args:
+        analysis_image: The preprocessed image to analyze
+        verbose: Whether to show detailed analysis output
+        
+    Returns:
+        dict: Contains all analysis results and combined confidence score
+    """
+    
+    # 1. Shadow Analysis
+    log_to_stderr("[1/4] Shadow Analysis", Fore.GREEN + Style.BRIGHT)
+    log_to_stderr("-" * 40, Fore.GREEN)
+    shadow_results = analyze_shadows(analysis_image, verbose)
+    log_to_stderr(f"✓ Shadow softness: {shadow_results['softness']:.2f} ({format_score_interpretation(shadow_results['softness'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Direction consistency: {shadow_results['direction_consistency']:.2f} ({format_score_interpretation(shadow_results['direction_consistency'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Shadow uniformity: {shadow_results['uniformity']:.2f} ({format_score_interpretation(shadow_results['uniformity'])})", Fore.WHITE)
+    log_to_stderr(f"→ Shadow score: {shadow_results['overall_score']*100:.0f}% ({format_score_interpretation(shadow_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+    log_to_stderr("")
+    
+    # 2. Highlight Analysis
+    log_to_stderr("[2/4] Highlight Analysis", Fore.GREEN + Style.BRIGHT)
+    log_to_stderr("-" * 40, Fore.GREEN)
+    highlight_results = analyze_highlights(analysis_image, verbose)
+    catchlight_text = "Yes (circular pattern)" if highlight_results['catchlight_detected'] else "No"
+    log_to_stderr(f"✓ Catchlights detected: {catchlight_text}", Fore.WHITE)
+    log_to_stderr(f"✓ Distribution uniformity: {highlight_results['distribution_uniformity']:.2f} ({format_score_interpretation(highlight_results['distribution_uniformity'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Shape regularity: {highlight_results['shape_regularity']:.2f} ({format_score_interpretation(highlight_results['shape_regularity'])})", Fore.WHITE)
+    log_to_stderr(f"→ Highlight score: {highlight_results['overall_score']*100:.0f}% ({format_score_interpretation(highlight_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+    log_to_stderr("")
+    
+    # 3. Color Temperature Analysis
+    log_to_stderr("[3/4] Color Temperature Analysis", Fore.GREEN + Style.BRIGHT)
+    log_to_stderr("-" * 40, Fore.GREEN)
+    color_results = analyze_color_temperature(analysis_image, verbose)
+    log_to_stderr(f"✓ Temperature consistency: {color_results['temperature_consistency']:.2f} ({format_score_interpretation(color_results['temperature_consistency'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Single light source: {color_results['mixed_lighting']:.2f} ({format_score_interpretation(color_results['mixed_lighting'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Gradient uniformity: {color_results['gradient_uniformity']:.2f} ({format_score_interpretation(color_results['gradient_uniformity'])})", Fore.WHITE)
+    log_to_stderr(f"→ Color temperature score: {color_results['overall_score']*100:.0f}% ({format_score_interpretation(color_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+    log_to_stderr("")
+    
+    # 4. Background Separation Analysis
+    log_to_stderr("[4/4] Background Separation Analysis", Fore.GREEN + Style.BRIGHT)
+    log_to_stderr("-" * 40, Fore.GREEN)
+    background_results = analyze_background_separation(analysis_image, verbose)
+    log_to_stderr(f"✓ Edge sharpness: {background_results['edge_sharpness']:.2f} ({format_score_interpretation(background_results['edge_sharpness'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Background uniformity: {background_results['background_uniformity']:.2f} ({format_score_interpretation(background_results['background_uniformity'])})", Fore.WHITE)
+    log_to_stderr(f"✓ Rim lighting presence: {background_results['rim_lighting']:.2f} ({format_score_interpretation(background_results['rim_lighting'])})", Fore.WHITE)
+    log_to_stderr(f"→ Background separation score: {background_results['overall_score']*100:.0f}% ({format_score_interpretation(background_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+    log_to_stderr("")
+    
+    # Calculate lighting analysis confidence score
+    lighting_confidence = (shadow_results['overall_score'] * 0.25 +
+                          highlight_results['overall_score'] * 0.25 +
+                          color_results['overall_score'] * 0.25 +
+                          background_results['overall_score'] * 0.25)
+    
+    return {
+        'shadow_results': shadow_results,
+        'highlight_results': highlight_results,
+        'color_results': color_results,
+        'background_results': background_results,
+        'lighting_confidence': lighting_confidence
+    }
+
 def resize_image_for_analysis(image):
     """
     Resize image to optimal resolution for analysis.
@@ -404,55 +477,19 @@ Examples:
         
         log_to_stderr("")
         
-        # Run all analysis components
-        results = {}
-        
-        # 1. Shadow Analysis
-        log_to_stderr("[1/4] Shadow Analysis", Fore.GREEN + Style.BRIGHT)
-        log_to_stderr("-" * 40, Fore.GREEN)
-        shadow_results = analyze_shadows(analysis_image, args.verbose)
-        log_to_stderr(f"✓ Shadow softness: {shadow_results['softness']:.2f} ({format_score_interpretation(shadow_results['softness'])})", Fore.WHITE)
-        log_to_stderr(f"✓ Direction consistency: {shadow_results['direction_consistency']:.2f} ({format_score_interpretation(shadow_results['direction_consistency'])})", Fore.WHITE)
-        log_to_stderr(f"✓ Shadow uniformity: {shadow_results['uniformity']:.2f} ({format_score_interpretation(shadow_results['uniformity'])})", Fore.WHITE)
-        log_to_stderr(f"→ Shadow score: {shadow_results['overall_score']*100:.0f}% ({format_score_interpretation(shadow_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+        # Phase 1: Core Lighting Analysis (Always runs)
+        log_to_stderr("=== PHASE 1: LIGHTING ANALYSIS ===", Fore.MAGENTA + Style.BRIGHT)
         log_to_stderr("")
         
-        # 2. Highlight Analysis
-        log_to_stderr("[2/4] Highlight Analysis", Fore.GREEN + Style.BRIGHT)
-        log_to_stderr("-" * 40, Fore.GREEN)
-        highlight_results = analyze_highlights(analysis_image, args.verbose)
-        catchlight_text = "Yes (circular pattern)" if highlight_results['catchlight_detected'] else "No"
-        log_to_stderr(f"✓ Catchlights detected: {catchlight_text}", Fore.WHITE)
-        log_to_stderr(f"✓ Distribution uniformity: {highlight_results['distribution_uniformity']:.2f} ({format_score_interpretation(highlight_results['distribution_uniformity'])})", Fore.WHITE)
-        log_to_stderr(f"✓ Shape regularity: {highlight_results['shape_regularity']:.2f} ({format_score_interpretation(highlight_results['shape_regularity'])})", Fore.WHITE)
-        log_to_stderr(f"→ Highlight score: {highlight_results['overall_score']*100:.0f}% ({format_score_interpretation(highlight_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
+        lighting_results = analyze_lighting(analysis_image, args.verbose)
+        
+        log_to_stderr("=== LIGHTING ANALYSIS COMPLETE ===", Fore.MAGENTA + Style.BRIGHT)
+        log_to_stderr(f"→ Lighting confidence: {lighting_results['lighting_confidence']*100:.0f}% ({format_score_interpretation(lighting_results['lighting_confidence'])})", Fore.MAGENTA + Style.BRIGHT)
         log_to_stderr("")
         
-        # 3. Color Temperature Analysis
-        log_to_stderr("[3/4] Color Temperature Analysis", Fore.GREEN + Style.BRIGHT)
-        log_to_stderr("-" * 40, Fore.GREEN)
-        color_results = analyze_color_temperature(analysis_image, args.verbose)
-        log_to_stderr(f"✓ Temperature consistency: {color_results['temperature_consistency']:.2f} ({format_score_interpretation(color_results['temperature_consistency'])})", Fore.WHITE)
-        log_to_stderr(f"✓ Single light source: {color_results['mixed_lighting']:.2f} ({format_score_interpretation(color_results['mixed_lighting'])})", Fore.WHITE)
-        log_to_stderr(f"✓ Gradient uniformity: {color_results['gradient_uniformity']:.2f} ({format_score_interpretation(color_results['gradient_uniformity'])})", Fore.WHITE)
-        log_to_stderr(f"→ Color temperature score: {color_results['overall_score']*100:.0f}% ({format_score_interpretation(color_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
-        log_to_stderr("")
-        
-        # 4. Background Separation Analysis
-        log_to_stderr("[4/4] Background Separation Analysis", Fore.GREEN + Style.BRIGHT)
-        log_to_stderr("-" * 40, Fore.GREEN)
-        background_results = analyze_background_separation(analysis_image, args.verbose)
-        log_to_stderr(f"✓ Edge sharpness: {background_results['edge_sharpness']:.2f} ({format_score_interpretation(background_results['edge_sharpness'])})", Fore.WHITE)
-        log_to_stderr(f"✓ Background uniformity: {background_results['background_uniformity']:.2f} ({format_score_interpretation(background_results['background_uniformity'])})", Fore.WHITE)
-        log_to_stderr(f"✓ Rim lighting presence: {background_results['rim_lighting']:.2f} ({format_score_interpretation(background_results['rim_lighting'])})", Fore.WHITE)
-        log_to_stderr(f"→ Background separation score: {background_results['overall_score']*100:.0f}% ({format_score_interpretation(background_results['overall_score'])})", Fore.YELLOW + Style.BRIGHT)
-        log_to_stderr("")
-        
-        # Calculate final confidence score
-        confidence = (shadow_results['overall_score'] * 0.25 +
-                     highlight_results['overall_score'] * 0.25 +
-                     color_results['overall_score'] * 0.25 +
-                     background_results['overall_score'] * 0.25)
+        # Final confidence is currently just lighting analysis
+        # Future phases will modify this calculation
+        confidence = lighting_results['lighting_confidence']
         
         is_studio = confidence > 0.5
         

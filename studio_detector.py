@@ -15,8 +15,11 @@ import numpy as np
 import cv2
 from scipy import ndimage, signal, fft
 from scipy.ndimage import gaussian_filter
-from skimage import filters, measure, segmentation
+from scipy.stats import skew, kurtosis
+from skimage import filters, measure, segmentation, exposure
 from skimage.feature import graycomatrix, graycoprops
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
 from colorama import init, Fore, Style
 
 # Initialize colorama for cross-platform colored output
@@ -38,14 +41,516 @@ GRID_SIZE = 8
 
 setup_time = time.time() - start_time
 
+# ML-based feature detection algorithms
+class MLFeatureAnalyzer:
+    """Uses machine learning algorithms for better feature identification"""
+    
+    def __init__(self):
+        self.kmeans_lighting = None
+        self.gmm_background = None
+    
+    def analyze_lighting_clusters(self, image):
+        """Use K-means clustering to identify lighting patterns"""
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        l_channel = lab[:, :, 0]
+        
+        # Reshape for clustering
+        pixels = l_channel.reshape(-1, 1)
+        
+        # Use K-means to find lighting clusters
+        kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+        clusters = kmeans.fit_predict(pixels)
+        
+        # Analyze cluster characteristics
+        cluster_centers = kmeans.cluster_centers_.flatten()
+        cluster_std = [np.std(pixels[clusters == i]) for i in range(3)]
+        
+        # Studio lighting typically has more distinct lighting zones
+        lighting_separation = np.std(cluster_centers)
+        lighting_uniformity = 1.0 - np.mean(cluster_std) / 255.0
+        
+        return {
+            'lighting_separation': min(lighting_separation / 50.0, 1.0),
+            'lighting_uniformity': max(lighting_uniformity, 0.0),
+            'cluster_count': len(np.unique(clusters))
+        }
+    
+    def analyze_background_segmentation(self, image):
+        """Use Gaussian Mixture Model for background/foreground segmentation"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Use texture features for segmentation
+        h, w = gray.shape
+        
+        # Create feature vector combining intensity and texture
+        features = []
+        
+        # Add intensity
+        features.append(gray.flatten())
+        
+        # Add local standard deviation (texture)
+        texture = ndimage.generic_filter(gray, np.std, size=5)
+        features.append(texture.flatten())
+        
+        # Add gradient magnitude
+        grad_x = ndimage.sobel(gray, axis=1)
+        grad_y = ndimage.sobel(gray, axis=0)
+        gradient = np.sqrt(grad_x**2 + grad_y**2)
+        features.append(gradient.flatten())
+        
+        # Combine features
+        feature_matrix = np.column_stack(features)
+        
+        # Use Gaussian Mixture Model for segmentation
+        gmm = GaussianMixture(n_components=2, random_state=42)
+        segments = gmm.fit_predict(feature_matrix)
+        
+        # Reshape back to image
+        segment_map = segments.reshape(h, w)
+        
+        # Analyze segmentation quality
+        # Studio images typically have cleaner background/foreground separation
+        segment_0_ratio = np.sum(segment_map == 0) / (h * w)
+        segment_1_ratio = np.sum(segment_map == 1) / (h * w)
+        
+        # Better separation means one segment is clearly dominant (background)
+        separation_quality = abs(segment_0_ratio - segment_1_ratio)
+        
+        # Check edge coherence between segments
+        edges = cv2.Canny(gray, 50, 150)
+        segment_edges = cv2.Canny((segment_map * 255).astype(np.uint8), 50, 150)
+        
+        # Studio images have segment boundaries that align with actual edges
+        edge_alignment = np.sum((edges > 0) & (segment_edges > 0)) / max(np.sum(edges > 0), 1)
+        
+        return {
+            'separation_quality': separation_quality,
+            'edge_alignment': edge_alignment,
+            'background_uniformity': self._analyze_segment_uniformity(gray, segment_map)
+        }
+    
+    def _analyze_segment_uniformity(self, gray, segment_map):
+        """Analyze uniformity within the larger segment (assumed background)"""
+        # Find which segment is larger (likely background)
+        segment_0_size = np.sum(segment_map == 0)
+        segment_1_size = np.sum(segment_map == 1)
+        
+        bg_segment = 0 if segment_0_size > segment_1_size else 1
+        bg_mask = segment_map == bg_segment
+        
+        if np.sum(bg_mask) > 0:
+            bg_pixels = gray[bg_mask]
+            uniformity = 1.0 - np.std(bg_pixels) / 128.0
+            return max(uniformity, 0.0)
+        return 0.5
+    
+    def detect_professional_patterns(self, image):
+        """Use statistical analysis to detect professional photography patterns"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Analyze histogram characteristics
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
+        hist_norm = hist / hist.sum()
+        
+        # Calculate statistical moments
+        histogram_skewness = skew(hist_norm)
+        histogram_kurtosis = kurtosis(hist_norm)
+        
+        # Professional photos often have specific histogram characteristics
+        # Studio photos tend to have more controlled dynamic range
+        professional_histogram = (
+            abs(histogram_skewness) < 0.5 and  # Not too skewed
+            histogram_kurtosis > 1.5            # Some peaking (controlled lighting)
+        )
+        
+        # Analyze spatial frequency content
+        f_transform = fft.fft2(gray)
+        f_shift = fft.fftshift(f_transform)
+        magnitude_spectrum = np.abs(f_shift)
+        
+        # Professional photos have characteristic frequency distributions
+        # Studio backgrounds create specific frequency signatures
+        h, w = gray.shape
+        center_y, center_x = h // 2, w // 2
+        
+        # Create rings at different frequencies
+        y, x = np.ogrid[:h, :w]
+        
+        # Low frequency (0-30 pixels from center)
+        low_freq_mask = ((x - center_x)**2 + (y - center_y)**2) <= 30**2
+        # Mid frequency (30-100 pixels)
+        mid_freq_mask = (((x - center_x)**2 + (y - center_y)**2) > 30**2) & \
+                       (((x - center_x)**2 + (y - center_y)**2) <= 100**2)
+        # High frequency (>100 pixels)
+        high_freq_mask = ((x - center_x)**2 + (y - center_y)**2) > 100**2
+        
+        low_power = np.sum(magnitude_spectrum[low_freq_mask])
+        mid_power = np.sum(magnitude_spectrum[mid_freq_mask])
+        high_power = np.sum(magnitude_spectrum[high_freq_mask])
+        total_power = low_power + mid_power + high_power
+        
+        # Studio images typically have higher low-frequency content
+        frequency_signature = low_power / (total_power + 1e-6)
+        
+        return {
+            'professional_histogram': float(professional_histogram),
+            'histogram_skewness': abs(histogram_skewness),
+            'histogram_kurtosis': histogram_kurtosis,
+            'frequency_signature': frequency_signature
+        }
+
+# Global ML analyzer instance
+ml_analyzer = MLFeatureAnalyzer()
+
+# Utility functions to reduce duplication
+def analyze_grid_regions(image, grid_size, analysis_func):
+    """
+    Generic grid-based analysis to reduce code duplication.
+    
+    Args:
+        image: Input image (grayscale or color)
+        grid_size: Number of grid cells per dimension
+        analysis_func: Function to apply to each grid cell
+        
+    Returns:
+        2D array of analysis results
+    """
+    h, w = image.shape[:2]
+    cell_h, cell_w = h // grid_size, w // grid_size
+    results = np.zeros((grid_size, grid_size))
+    
+    for i in range(grid_size):
+        for j in range(grid_size):
+            cell = image[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+            if cell.size > 0:
+                results[i, j] = analysis_func(cell)
+    
+    return results
+
+def calculate_gradient_magnitude(gray):
+    """
+    Calculate gradient magnitude using optimized convolution.
+    Reduces duplication across shadow, edge, and highlight analysis.
+    """
+    grad_x = cv2.filter2D(gray.astype(np.float32), -1, SOBEL_KERNEL_X)
+    grad_y = cv2.filter2D(gray.astype(np.float32), -1, SOBEL_KERNEL_Y)
+    return np.sqrt(grad_x**2 + grad_y**2), grad_x, grad_y
+
+def extract_border_regions(image, border_ratio=8):
+    """
+    Extract border regions for background analysis.
+    Reduces duplication in background and texture analysis.
+    """
+    h, w = image.shape[:2]
+    border_width = min(h, w) // border_ratio
+    
+    regions = [
+        image[:border_width, :],          # top
+        image[-border_width:, :],         # bottom
+        image[:, :border_width],          # left  
+        image[:, -border_width:]          # right
+    ]
+    
+    return [r for r in regions if r.size > 0]
+
 def log_to_stderr(message, color=Fore.WHITE):
     """Print colored message to stderr"""
     sys.stderr.write(color + message + Style.RESET_ALL + '\n')
     sys.stderr.flush()
 
+# Vectorized analysis functions for ML
+def analyze_shadows_ml(image):
+    """Vectorized shadow analysis for ML features"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Vectorized gradient calculation
+    grad_x = cv2.filter2D(gray.astype(np.float32), -1, SOBEL_KERNEL_X)
+    grad_y = cv2.filter2D(gray.astype(np.float32), -1, SOBEL_KERNEL_Y)
+    magnitude = np.sqrt(grad_x**2 + grad_y**2)
+    
+    # Shadow softness
+    softness = 1.0 - np.clip(np.mean(magnitude) / 100.0, 0, 1)
+    
+    # Direction consistency using vectorized operations
+    angles = np.arctan2(grad_y, grad_x)
+    significant = magnitude > np.percentile(magnitude, 75)
+    if np.any(significant):
+        sig_angles = angles[significant]
+        consistency = np.abs(np.mean(np.exp(1j * sig_angles)))
+    else:
+        consistency = 0.5
+    
+    # Uniformity using fast convolution
+    local_var = cv2.blur((gray - np.mean(gray))**2, (20, 20))
+    uniformity = 1.0 - np.clip(np.std(local_var) / (np.mean(local_var) + 1e-6), 0, 1)
+    
+    return {
+        'softness': softness,
+        'direction_consistency': consistency,
+        'uniformity': uniformity
+    }
+
+def analyze_highlights_ml(image):
+    """Vectorized highlight analysis for ML features"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Adaptive thresholding for highlights
+    threshold = np.percentile(gray, 90)
+    highlights = gray > threshold
+    
+    # Connected components analysis
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        highlights.astype(np.uint8), connectivity=8
+    )
+    
+    catchlight_score = 0.0
+    shape_scores = []
+    
+    for i in range(1, num_labels):
+        area = stats[i, cv2.CC_STAT_AREA]
+        if 10 < area < 500:
+            w = stats[i, cv2.CC_STAT_WIDTH]
+            h = stats[i, cv2.CC_STAT_HEIGHT]
+            aspect_ratio = min(w, h) / max(w, h) if max(w, h) > 0 else 0
+            
+            if aspect_ratio > 0.7:
+                catchlight_score = max(catchlight_score, aspect_ratio)
+            shape_scores.append(aspect_ratio)
+    
+    shape_regularity = np.mean(shape_scores) if shape_scores else 0.0
+    
+    # Vectorized distribution analysis
+    h, w = gray.shape
+    grid_h, grid_w = h // GRID_SIZE, w // GRID_SIZE
+    distribution = []
+    
+    for i in range(GRID_SIZE):
+        for j in range(GRID_SIZE):
+            cell = highlights[i*grid_h:(i+1)*grid_h, j*grid_w:(j+1)*grid_w]
+            distribution.append(np.sum(cell))
+    
+    dist_uniformity = 1.0 - np.clip(np.std(distribution) / (np.mean(distribution) + 1e-6), 0, 1)
+    
+    return {
+        'catchlight_pattern': catchlight_score,
+        'distribution_uniformity': dist_uniformity,
+        'shape_regularity': shape_regularity
+    }
+
+def analyze_color_temperature_ml(image):
+    """Vectorized color temperature analysis for ML features"""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    
+    # Vectorized temperature analysis using sliding windows
+    h, w = image.shape[:2]
+    window_size = min(h, w) // 8
+    
+    # Extract temperature values using vectorized operations
+    temps = []
+    for i in range(0, h - window_size, window_size // 2):
+        for j in range(0, w - window_size, window_size // 2):
+            window_b = b_channel[i:i+window_size, j:j+window_size]
+            window_l = l_channel[i:i+window_size, j:j+window_size]
+            
+            if np.mean(window_l) > 30:
+                temps.append(np.mean(window_b))
+    
+    if temps:
+        consistency = 1.0 / (1.0 + np.var(temps) / 100.0)
+        
+        # Vectorized mixed lighting detection
+        local_var = cv2.blur((b_channel - np.mean(b_channel))**2, (20, 20))
+        single_source = 1.0 - np.clip(np.mean(local_var) / 50.0, 0, 1)
+        
+        # Gradient uniformity
+        grad_mag = np.abs(np.gradient(b_channel.astype(float))).mean()
+        gradient_uniformity = 1.0 - np.clip(grad_mag / 10.0, 0, 1)
+    else:
+        consistency = 0.5
+        single_source = 0.5
+        gradient_uniformity = 0.5
+    
+    return {
+        'temperature_consistency': consistency,
+        'mixed_lighting': single_source,
+        'gradient_uniformity': gradient_uniformity
+    }
+
+def analyze_background_separation_ml(image):
+    """Vectorized background analysis for ML features"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Fast edge detection
+    edges = cv2.Canny(gray, 50, 150)
+    
+    # Vectorized edge sharpness
+    grad_mag = np.sqrt(cv2.Sobel(gray, cv2.CV_64F, 1, 0)**2 + 
+                      cv2.Sobel(gray, cv2.CV_64F, 0, 1)**2)
+    edge_pixels = grad_mag[edges > 0]
+    edge_sharpness = np.mean(edge_pixels) / 255.0 if len(edge_pixels) > 0 else 0.5
+    
+    # Fast background mask using morphology
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    background_mask = cv2.morphologyEx(edges, cv2.MORPH_DILATE, kernel, iterations=5) == 0
+    
+    if np.any(background_mask):
+        bg_values = gray[background_mask]
+        uniformity = 1.0 - np.clip(np.std(bg_values) / 128.0, 0, 1)
+    else:
+        uniformity = 0.5
+    
+    # Rim lighting detection
+    edge_dilation = cv2.dilate(edges, kernel, iterations=2)
+    rim_region = edge_dilation > 0
+    
+    if np.any(rim_region):
+        rim_intensities = gray[rim_region]
+        rim_lighting = np.percentile(rim_intensities, 90) / 255.0
+    else:
+        rim_lighting = 0.5
+    
+    return {
+        'edge_sharpness': edge_sharpness,
+        'background_uniformity': uniformity,
+        'rim_lighting': rim_lighting
+    }
+
+# New feature extraction functions
+def extract_histogram_features(image):
+    """Extract histogram-based features"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Calculate normalized histogram
+    hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
+    hist = hist / hist.sum()
+    
+    # Histogram uniformity
+    hist_uniformity = 1.0 - np.std(hist) * 100
+    
+    # Exposure consistency
+    low_clip = np.sum(hist[:5])
+    high_clip = np.sum(hist[-5:])
+    exposure_consistency = 1.0 - (low_clip + high_clip)
+    
+    # Background peak detection
+    peaks = signal.find_peaks(hist, height=0.01)[0]
+    if len(peaks) > 0:
+        peak_heights = hist[peaks]
+        bg_peak_prominence = min(np.max(peak_heights) / np.mean(hist) / 10.0, 1.0)
+    else:
+        bg_peak_prominence = 0.5
+    
+    # Dynamic range
+    non_zero = np.where(hist > 0.001)[0]
+    if len(non_zero) > 0:
+        dynamic_range = (non_zero[-1] - non_zero[0]) / 255.0
+    else:
+        dynamic_range = 0.5
+    
+    return [hist_uniformity, exposure_consistency, bg_peak_prominence, dynamic_range]
+
+def extract_composition_features(image):
+    """Extract composition-related features"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    
+    # Focus gradient analysis using Laplacian variance
+    grid_h, grid_w = h // GRID_SIZE, w // GRID_SIZE
+    focus_map = np.zeros((GRID_SIZE, GRID_SIZE))
+    
+    for i in range(GRID_SIZE):
+        for j in range(GRID_SIZE):
+            cell = gray[i*grid_h:(i+1)*grid_h, j*grid_w:(j+1)*grid_w]
+            laplacian = cv2.Laplacian(cell, cv2.CV_64F)
+            focus_map[i, j] = np.var(laplacian)
+    
+    # Find focus center and calculate gradient
+    max_idx = np.unravel_index(np.argmax(focus_map), focus_map.shape)
+    center_i, center_j = max_idx
+    
+    distances = []
+    focus_values = []
+    for i in range(GRID_SIZE):
+        for j in range(GRID_SIZE):
+            dist = np.sqrt((i - center_i)**2 + (j - center_j)**2)
+            distances.append(dist)
+            focus_values.append(focus_map[i, j])
+    
+    if len(distances) > 1 and np.std(distances) > 0:
+        correlation = np.corrcoef(distances, focus_values)[0, 1]
+        focus_gradient = abs(correlation) if not np.isnan(correlation) else 0.5
+    else:
+        focus_gradient = 0.5
+    
+    # Rule of thirds using saliency
+    saliency = cv2.filter2D(gray.astype(np.float32), -1, SOBEL_KERNEL_X)**2 + \
+               cv2.filter2D(gray.astype(np.float32), -1, SOBEL_KERNEL_Y)**2
+    saliency_smooth = cv2.GaussianBlur(saliency, (31, 31), 0)
+    
+    max_sal_idx = np.unravel_index(np.argmax(saliency_smooth), saliency_smooth.shape)
+    subject_y, subject_x = max_sal_idx
+    
+    # Distance to rule of thirds
+    thirds_x = [w//3, 2*w//3]
+    thirds_y = [h//3, 2*h//3]
+    
+    min_dist = min([np.sqrt((subject_x - tx)**2 + (subject_y - ty)**2) 
+                   for tx in thirds_x for ty in thirds_y])
+    
+    diagonal = np.sqrt(h**2 + w**2)
+    rule_of_thirds = 1.0 - min(min_dist / (diagonal * 0.2), 1.0)
+    
+    # Symmetry analysis
+    left = gray[:, :w//2]
+    right = gray[:, w//2:2*(w//2)]
+    
+    if left.shape[1] == right.shape[1]:
+        right_flipped = np.fliplr(right)
+        symmetry = 1.0 - np.mean(np.abs(left - right_flipped)) / 255.0
+    else:
+        symmetry = 0.5
+    
+    return [focus_gradient, rule_of_thirds, symmetry]
+
+def extract_edge_features(image):
+    """Extract edge and segmentation features"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Edge detection
+    edges = cv2.Canny(gray, 30, 100)
+    
+    # Seamless background detection
+    h, w = gray.shape
+    border_width = min(h, w) // 10
+    
+    border_edges = np.concatenate([
+        edges[:border_width, :].flatten(),
+        edges[-border_width:, :].flatten(),
+        edges[:, :border_width].flatten(),
+        edges[:, -border_width:].flatten()
+    ])
+    
+    border_edge_density = np.sum(border_edges > 0) / len(border_edges)
+    seamless_bg = 1.0 - border_edge_density
+    
+    # Edge continuity using Hough lines
+    lines = cv2.HoughLinesP(edges, 1, np.pi/180, 50, minLineLength=50, maxLineGap=10)
+    
+    if lines is not None:
+        line_lengths = [np.sqrt((x2-x1)**2 + (y2-y1)**2) 
+                       for x1, y1, x2, y2 in lines[:, 0]]
+        avg_line_length = np.mean(line_lengths) / np.sqrt(h**2 + w**2)
+        edge_continuity = min(avg_line_length * 5, 1.0)
+    else:
+        edge_continuity = 0.0
+    
+    return [seamless_bg, edge_continuity]
+
 def analyze_lighting(analysis_image, verbose=False):
     """
     Comprehensive lighting analysis - the core foundation of studio detection.
+    Now enhanced with ML-based feature extraction for improved accuracy.
     
     This function runs all four fundamental lighting analysis components:
     1. Shadow Analysis - examines shadow characteristics
@@ -61,10 +566,92 @@ def analyze_lighting(analysis_image, verbose=False):
         dict: Contains all analysis results and combined confidence score
     """
     
+    # Use ML algorithms for enhanced feature detection
+    use_ml_features = True
+    
+    if use_ml_features and not verbose:
+        # Fast path: use ML-enhanced analysis
+        shadow_results = analyze_shadows_ml(analysis_image)
+        highlight_results = analyze_highlights_ml(analysis_image)
+        color_results = analyze_color_temperature_ml(analysis_image)
+        background_results = analyze_background_separation_ml(analysis_image)
+        
+        # Add ML-based feature detection
+        ml_lighting = ml_analyzer.analyze_lighting_clusters(analysis_image)
+        ml_segmentation = ml_analyzer.analyze_background_segmentation(analysis_image)
+        ml_patterns = ml_analyzer.detect_professional_patterns(analysis_image)
+        
+        # Combine traditional and ML features for confidence
+        ml_confidence = (
+            (shadow_results['softness'] * 0.15) +
+            (shadow_results['direction_consistency'] * 0.1) +
+            (shadow_results['uniformity'] * 0.1) +
+            (highlight_results['catchlight_pattern'] * 0.1) +
+            (highlight_results['distribution_uniformity'] * 0.1) +
+            (color_results['temperature_consistency'] * 0.1) +
+            (background_results['background_uniformity'] * 0.1) +
+            (ml_lighting['lighting_uniformity'] * 0.075) +
+            (ml_segmentation['separation_quality'] * 0.075) +
+            (ml_patterns['frequency_signature'] * 0.05)
+        )
+        
+        # Create display-friendly results
+        shadow_display = {
+            'softness': shadow_results['softness'],
+            'direction_consistency': shadow_results['direction_consistency'],
+            'uniformity': shadow_results['uniformity'],
+            'overall_score': (shadow_results['softness'] * 0.4 + 
+                            shadow_results['direction_consistency'] * 0.3 + 
+                            shadow_results['uniformity'] * 0.3)
+        }
+        
+        highlight_display = {
+            'catchlight_detected': highlight_results['catchlight_pattern'] > 0.5,
+            'catchlight_pattern': highlight_results['catchlight_pattern'],
+            'distribution_uniformity': highlight_results['distribution_uniformity'],
+            'shape_regularity': highlight_results['shape_regularity'],
+            'overall_score': (highlight_results['catchlight_pattern'] * 0.3 + 
+                            highlight_results['distribution_uniformity'] * 0.35 + 
+                            highlight_results['shape_regularity'] * 0.35)
+        }
+        
+        color_display = {
+            'temperature_consistency': color_results['temperature_consistency'],
+            'mixed_lighting': color_results['mixed_lighting'],
+            'gradient_uniformity': color_results['gradient_uniformity'],
+            'overall_score': (color_results['temperature_consistency'] * 0.4 + 
+                            color_results['mixed_lighting'] * 0.3 + 
+                            color_results['gradient_uniformity'] * 0.3)
+        }
+        
+        background_display = {
+            'edge_sharpness': background_results['edge_sharpness'],
+            'background_uniformity': background_results['background_uniformity'],
+            'rim_lighting': background_results['rim_lighting'],
+            'overall_score': (background_results['edge_sharpness'] * 0.35 + 
+                            background_results['background_uniformity'] * 0.35 + 
+                            background_results['rim_lighting'] * 0.3)
+        }
+        
+        return {
+            'shadow_results': shadow_display,
+            'highlight_results': highlight_display,
+            'color_results': color_display,
+            'background_results': background_display,
+            'lighting_confidence': ml_confidence,
+            'ml_enhanced': True
+        }
+    
+    # Original verbose analysis path
     # 1. Shadow Analysis
     log_to_stderr("[1/4] Shadow Analysis", Fore.GREEN + Style.BRIGHT)
     log_to_stderr("-" * 40, Fore.GREEN)
-    shadow_results = analyze_shadows(analysis_image, verbose)
+    shadow_results = analyze_shadows(analysis_image, verbose) if not use_ml else analyze_shadows_ml(analysis_image)
+    if use_ml:
+        # Convert ML results to display format
+        shadow_results['overall_score'] = (shadow_results['softness'] * 0.4 + 
+                                          shadow_results['direction_consistency'] * 0.3 + 
+                                          shadow_results['uniformity'] * 0.3)
     log_to_stderr(f"✓ Shadow softness: {shadow_results['softness']:.2f} ({format_score_interpretation(shadow_results['softness'])})", Fore.WHITE)
     log_to_stderr(f"✓ Direction consistency: {shadow_results['direction_consistency']:.2f} ({format_score_interpretation(shadow_results['direction_consistency'])})", Fore.WHITE)
     log_to_stderr(f"✓ Shadow uniformity: {shadow_results['uniformity']:.2f} ({format_score_interpretation(shadow_results['uniformity'])})", Fore.WHITE)
@@ -74,7 +661,12 @@ def analyze_lighting(analysis_image, verbose=False):
     # 2. Highlight Analysis
     log_to_stderr("[2/4] Highlight Analysis", Fore.GREEN + Style.BRIGHT)
     log_to_stderr("-" * 40, Fore.GREEN)
-    highlight_results = analyze_highlights(analysis_image, verbose)
+    highlight_results = analyze_highlights(analysis_image, verbose) if not use_ml else analyze_highlights_ml(analysis_image)
+    if use_ml:
+        highlight_results['catchlight_detected'] = highlight_results['catchlight_pattern'] > 0.5
+        highlight_results['overall_score'] = (highlight_results['catchlight_pattern'] * 0.3 + 
+                                            highlight_results['distribution_uniformity'] * 0.35 + 
+                                            highlight_results['shape_regularity'] * 0.35)
     catchlight_text = "Yes (circular pattern)" if highlight_results['catchlight_detected'] else "No"
     log_to_stderr(f"✓ Catchlights detected: {catchlight_text}", Fore.WHITE)
     log_to_stderr(f"✓ Distribution uniformity: {highlight_results['distribution_uniformity']:.2f} ({format_score_interpretation(highlight_results['distribution_uniformity'])})", Fore.WHITE)
@@ -85,7 +677,11 @@ def analyze_lighting(analysis_image, verbose=False):
     # 3. Color Temperature Analysis
     log_to_stderr("[3/4] Color Temperature Analysis", Fore.GREEN + Style.BRIGHT)
     log_to_stderr("-" * 40, Fore.GREEN)
-    color_results = analyze_color_temperature(analysis_image, verbose)
+    color_results = analyze_color_temperature(analysis_image, verbose) if not use_ml else analyze_color_temperature_ml(analysis_image)
+    if use_ml:
+        color_results['overall_score'] = (color_results['temperature_consistency'] * 0.4 + 
+                                        color_results['mixed_lighting'] * 0.3 + 
+                                        color_results['gradient_uniformity'] * 0.3)
     log_to_stderr(f"✓ Temperature consistency: {color_results['temperature_consistency']:.2f} ({format_score_interpretation(color_results['temperature_consistency'])})", Fore.WHITE)
     log_to_stderr(f"✓ Single light source: {color_results['mixed_lighting']:.2f} ({format_score_interpretation(color_results['mixed_lighting'])})", Fore.WHITE)
     log_to_stderr(f"✓ Gradient uniformity: {color_results['gradient_uniformity']:.2f} ({format_score_interpretation(color_results['gradient_uniformity'])})", Fore.WHITE)
@@ -95,7 +691,11 @@ def analyze_lighting(analysis_image, verbose=False):
     # 4. Background Separation Analysis
     log_to_stderr("[4/4] Background Separation Analysis", Fore.GREEN + Style.BRIGHT)
     log_to_stderr("-" * 40, Fore.GREEN)
-    background_results = analyze_background_separation(analysis_image, verbose)
+    background_results = analyze_background_separation(analysis_image, verbose) if not use_ml else analyze_background_separation_ml(analysis_image)
+    if use_ml:
+        background_results['overall_score'] = (background_results['edge_sharpness'] * 0.35 + 
+                                             background_results['background_uniformity'] * 0.35 + 
+                                             background_results['rim_lighting'] * 0.3)
     log_to_stderr(f"✓ Edge sharpness: {background_results['edge_sharpness']:.2f} ({format_score_interpretation(background_results['edge_sharpness'])})", Fore.WHITE)
     log_to_stderr(f"✓ Background uniformity: {background_results['background_uniformity']:.2f} ({format_score_interpretation(background_results['background_uniformity'])})", Fore.WHITE)
     log_to_stderr(f"✓ Rim lighting presence: {background_results['rim_lighting']:.2f} ({format_score_interpretation(background_results['rim_lighting'])})", Fore.WHITE)
@@ -103,17 +703,37 @@ def analyze_lighting(analysis_image, verbose=False):
     log_to_stderr("")
     
     # Calculate lighting analysis confidence score
-    lighting_confidence = (shadow_results['overall_score'] * 0.25 +
-                          highlight_results['overall_score'] * 0.25 +
-                          color_results['overall_score'] * 0.25 +
-                          background_results['overall_score'] * 0.25)
+    if use_ml_features:
+        # Use ML-enhanced features for final confidence
+        ml_lighting = ml_analyzer.analyze_lighting_clusters(analysis_image)
+        ml_segmentation = ml_analyzer.analyze_background_segmentation(analysis_image)
+        ml_patterns = ml_analyzer.detect_professional_patterns(analysis_image)
+        
+        # Combine traditional lighting analysis with ML features
+        traditional_confidence = (shadow_results['overall_score'] * 0.25 +
+                                 highlight_results['overall_score'] * 0.25 +
+                                 color_results['overall_score'] * 0.25 +
+                                 background_results['overall_score'] * 0.25)
+        
+        ml_boost = (ml_lighting['lighting_uniformity'] * 0.3 +
+                   ml_segmentation['separation_quality'] * 0.4 +
+                   ml_patterns['frequency_signature'] * 0.3)
+        
+        lighting_confidence = traditional_confidence * 0.7 + ml_boost * 0.3
+        log_to_stderr("→ Using ML-enhanced feature detection", Fore.CYAN + Style.BRIGHT)
+    else:
+        lighting_confidence = (shadow_results['overall_score'] * 0.25 +
+                              highlight_results['overall_score'] * 0.25 +
+                              color_results['overall_score'] * 0.25 +
+                              background_results['overall_score'] * 0.25)
     
     return {
         'shadow_results': shadow_results,
         'highlight_results': highlight_results,
         'color_results': color_results,
         'background_results': background_results,
-        'lighting_confidence': lighting_confidence
+        'lighting_confidence': lighting_confidence,
+        'ml_enhanced': use_ml
     }
 
 def resize_image_for_analysis(image):
@@ -874,13 +1494,14 @@ def format_score_interpretation(score):
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description='Analyze an image to determine if it was taken in a studio',
+        description='ML-Enhanced Studio Photography Detector',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python studio_detector.py portrait.jpg
   python studio_detector.py --verbose landscape.png
   python studio_detector.py --quiet photo.bmp
+  python studio_detector.py --features image.jpg  # Show ML analysis details
         """
     )
     parser.add_argument('image_path', nargs='?', help='Path to the image file')
@@ -888,10 +1509,12 @@ Examples:
                        help='Show more detailed analysis output')
     parser.add_argument('--quiet', '-q', action='store_true', 
                        help='Suppress all stderr output, only show JSON')
+    parser.add_argument('--features', '-f', action='store_true',
+                       help='Show ML feature analysis details')
     
     args = parser.parse_args()
     
-    # Check if image path provided
+    # Check if image path provided for analysis
     if not args.image_path:
         parser.print_help()
         sys.exit(1)
@@ -909,9 +1532,9 @@ Examples:
             sys.exit(1)
         
         # Print header
-        log_to_stderr("=" * 40, Fore.YELLOW)
-        log_to_stderr("Studio Photography Detector", Fore.YELLOW + Style.BRIGHT)
-        log_to_stderr("=" * 40, Fore.YELLOW)
+        log_to_stderr("=" * 50, Fore.YELLOW)
+        log_to_stderr("ML-Enhanced Studio Photography Detector", Fore.YELLOW + Style.BRIGHT)
+        log_to_stderr("=" * 50, Fore.YELLOW)
         log_to_stderr(f"Analyzing: {args.image_path}", Fore.WHITE)
         log_to_stderr(f"Original size: {image.shape[1]}x{image.shape[0]}", Fore.WHITE)
         
@@ -977,15 +1600,47 @@ Examples:
         is_studio = final_confidence > 0.5
         
         # Print summary
-        log_to_stderr("=" * 40, Fore.YELLOW)
+        log_to_stderr("=" * 50, Fore.YELLOW)
         log_to_stderr("ANALYSIS COMPLETE", Fore.YELLOW + Style.BRIGHT)
-        log_to_stderr("=" * 40, Fore.YELLOW)
+        log_to_stderr("=" * 50, Fore.YELLOW)
+        
+        # Show ML status
+        if hasattr(lighting_results, 'ml_enhanced') and lighting_results.get('ml_enhanced'):
+            log_to_stderr("ML Enhancement: ACTIVE (K-means clustering, GMM segmentation)", Fore.CYAN + Style.BRIGHT)
+        else:
+            log_to_stderr("ML Enhancement: Using traditional heuristics", Fore.YELLOW)
+        
+        # Show ML feature analysis if requested
+        if args.features:
+            log_to_stderr("\nML Feature Analysis:", Fore.CYAN + Style.BRIGHT)
+            
+            # Run ML analysis
+            ml_lighting = ml_analyzer.analyze_lighting_clusters(analysis_image)
+            ml_segmentation = ml_analyzer.analyze_background_segmentation(analysis_image)
+            ml_patterns = ml_analyzer.detect_professional_patterns(analysis_image)
+            
+            log_to_stderr(f"  Lighting Clusters:", Fore.CYAN)
+            log_to_stderr(f"    - Lighting separation: {ml_lighting['lighting_separation']:.3f}", Fore.CYAN)
+            log_to_stderr(f"    - Lighting uniformity: {ml_lighting['lighting_uniformity']:.3f}", Fore.CYAN)
+            log_to_stderr(f"    - Cluster count: {ml_lighting['cluster_count']}", Fore.CYAN)
+            
+            log_to_stderr(f"  Background Segmentation:", Fore.CYAN)
+            log_to_stderr(f"    - Separation quality: {ml_segmentation['separation_quality']:.3f}", Fore.CYAN)
+            log_to_stderr(f"    - Edge alignment: {ml_segmentation['edge_alignment']:.3f}", Fore.CYAN)
+            log_to_stderr(f"    - Background uniformity: {ml_segmentation['background_uniformity']:.3f}", Fore.CYAN)
+            
+            log_to_stderr(f"  Professional Patterns:", Fore.CYAN)
+            log_to_stderr(f"    - Professional histogram: {ml_patterns['professional_histogram']:.3f}", Fore.CYAN)
+            log_to_stderr(f"    - Histogram skewness: {ml_patterns['histogram_skewness']:.3f}", Fore.CYAN)
+            log_to_stderr(f"    - Frequency signature: {ml_patterns['frequency_signature']:.3f}", Fore.CYAN)
+        
         log_to_stderr("")
         
         # Output JSON result to stdout
         result = {
             "is_studio": bool(is_studio),  # Convert numpy bool to Python bool
-            "confidence": round(float(final_confidence), 2)  # Ensure float type
+            "confidence": round(float(final_confidence), 2),  # Ensure float type
+            "ml_enhanced": lighting_results.get('ml_enhanced', False)
         }
         print(json.dumps(result))
         
